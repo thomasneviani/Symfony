@@ -243,4 +243,251 @@ try {
     throw new AuthenticationException($e->getMessage());
 }
 ```
+**Non, tu ne dois PAS coupler ton Value Object à Symfony Validator**. Voici pourquoi et comment gérer la validation.[1][2]
 
+## Séparation des validations
+
+### DTO : Symfony Validator (Infrastructure)
+
+```php
+// src/Erp/PublishedLanguage/DTO/AuthenticationResponseDto.php
+use Symfony\Component\Validator\Constraints as Assert;
+
+final readonly class AuthenticationResponseDto
+{
+    public function __construct(
+        #[Assert\NotBlank]
+        #[Assert\Positive]
+        public int $userId,
+        
+        #[Assert\NotBlank]
+        #[Assert\Length(min: 10)]
+        public string $accessToken,
+        
+        #[Assert\NotBlank]
+        #[Assert\DateTime]
+        public string $expiresAt
+    ) {}
+}
+```
+
+**Utilise Symfony Validator** car le DTO est dans la couche Infrastructure.[3][4]
+
+### Value Object : Validation manuelle (Domain)
+
+```php
+// src/Authentication/Domain/Model/SessionKey.php
+namespace App\Authentication\Domain\Model;
+
+final readonly class SessionKey
+{
+    private function __construct(
+        public string $token,
+        public int $userId,
+        public \DateTimeImmutable $expiresAt
+    ) {}
+    
+    public static function create(
+        string $token,
+        int $userId,
+        \DateTimeImmutable $expiresAt
+    ): self {
+        // ✅ Validation MANUELLE dans le domaine
+        if (empty($token)) {
+            throw new \DomainException('Session token cannot be empty');
+        }
+        
+        if ($userId <= 0) {
+            throw new \DomainException('User ID must be positive');
+        }
+        
+        if ($expiresAt <= new \DateTimeImmutable()) {
+            throw new \DomainException('Token is already expired');
+        }
+        
+        $maxExpiration = (new \DateTimeImmutable())->modify('+24 hours');
+        if ($expiresAt > $maxExpiration) {
+            throw new \DomainException('Token expiration exceeds 24 hours limit');
+        }
+        
+        return new self($token, $userId, $expiresAt);
+    }
+}
+```
+
+**N'utilise PAS Symfony Validator** car le VO est dans le domaine.[2][1]
+
+## Pourquoi ne pas utiliser Symfony Validator sur les VO
+
+### 1. Violation de Clean Architecture[5][2]
+
+Utiliser Symfony Validator dans ton domaine crée une **dépendance vers le framework** :
+
+```php
+// ❌ Mauvais : couplage du Domain à Symfony
+namespace App\Authentication\Domain\Model;
+
+use Symfony\Component\Validator\Constraints as Assert; // ❌ Dépendance framework
+
+final readonly class SessionKey
+{
+    public function __construct(
+        #[Assert\NotBlank]  // ❌ Domain couplé à Infrastructure
+        public string $token,
+    ) {}
+}
+```
+
+Ton **domaine doit être framework-agnostic**.[1][2]
+
+### 2. Perte de contrôle sur la logique métier
+
+Les annotations Symfony Validator sont **déclaratives et limitées**  :[1]
+
+```php
+// ❌ Impossible d'exprimer cette règle métier avec des annotations
+#[Assert\???] // Comment valider "max 24h dans le futur" ?
+public \DateTimeImmutable $expiresAt;
+```
+
+La validation manuelle est **plus expressive**  :[2][1]
+
+```php
+// ✅ Règle métier claire et testable
+if ($expiresAt > (new \DateTimeImmutable())->modify('+24 hours')) {
+    throw new \DomainException('Token expiration exceeds 24 hours limit');
+}
+```
+
+### 3. Testabilité et portabilité
+
+```php
+// ✅ Tests unitaires purs, sans dépendances
+public function testCannotCreateExpiredSession(): void
+{
+    $this->expectException(\DomainException::class);
+    
+    SessionKey::create(
+        token: 'abc123',
+        userId: 1,
+        expiresAt: new \DateTimeImmutable('-1 hour') // Déjà expiré
+    );
+}
+```
+
+Pas besoin de charger Symfony ou le ValidatorInterface pour tester.[2][1]
+
+## Architecture complète recommandée
+
+### Flux de validation en deux étapes
+
+```php
+// 1. Infrastructure : Validation technique avec Symfony Validator
+class ErpAuthenticationService
+{
+    public function login(string $username, string $password): AuthenticationResponseDto
+    {
+        $crmResponse = $this->crmClient->call('POST', '/auth/login', [...]);
+        
+        $dto = new AuthenticationResponseDto(
+            userId: $crmResponse['id'],
+            accessToken: $crmResponse['access_token'],
+            expiresAt: $crmResponse['token_expiration']
+        );
+        
+        // Validation Symfony
+        $violations = $this->validator->validate($dto);
+        if (count($violations) > 0) {
+            throw new ValidationFailedException($dto, $violations);
+        }
+        
+        return $dto;
+    }
+}
+
+// 2. Domain : Validation métier manuelle dans le VO
+class ErpAuthenticationAdapter
+{
+    public function login(string $username, string $password): SessionKey
+    {
+        $dto = $this->erpAuthApi->login($username, $password);
+        
+        // Validation métier automatique via factory method
+        return SessionKey::create(
+            token: $dto->accessToken,
+            userId: $dto->userId,
+            expiresAt: new \DateTimeImmutable($dto->expiresAt)
+        );
+    }
+}
+```
+
+## Pattern recommandé pour les Value Objects
+
+### Named constructor avec validation
+
+```php
+final readonly class SessionKey
+{
+    private function __construct(
+        public string $token,
+        public int $userId,
+        public \DateTimeImmutable $expiresAt
+    ) {}
+    
+    // Factory method avec validation
+    public static function create(
+        string $token,
+        int $userId,
+        \DateTimeImmutable $expiresAt
+    ): self {
+        self::validate($token, $userId, $expiresAt);
+        return new self($token, $userId, $expiresAt);
+    }
+    
+    private static function validate(
+        string $token,
+        int $userId,
+        \DateTimeImmutable $expiresAt
+    ): void {
+        if (empty($token)) {
+            throw new \DomainException('Session token cannot be empty');
+        }
+        
+        if ($userId <= 0) {
+            throw new \DomainException('User ID must be positive');
+        }
+        
+        if ($expiresAt <= new \DateTimeImmutable()) {
+            throw new \DomainException('Token is already expired');
+        }
+        
+        $maxExpiration = (new \DateTimeImmutable())->modify('+24 hours');
+        if ($expiresAt > $maxExpiration) {
+            throw new \DomainException('Token expiration exceeds 24 hours limit');
+        }
+    }
+}
+```
+
+### Alternative : méthode de validation dédiée
+
+```php
+final readonly class Email
+{
+    private function __construct(public string $value) {}
+    
+    public static function fromString(string $email): self
+    {
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new \DomainException("Invalid email format: {$email}");
+        }
+        
+        if (strlen($email) > 255) {
+            throw new \DomainException('Email exceeds maximum length of 255 characters');
+        }
+        
+        return new self($email);
+    }
+}
+```
