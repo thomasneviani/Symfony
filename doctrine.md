@@ -1,348 +1,526 @@
-## Principe fondamental : Séparation Domain / Persistence
+Parfait ! Voici les **fichiers essentiels minimum** pour démarrer.[1][2]
 
-En Clean Architecture, **l'infrastructure (Doctrine) ne doit pas polluer le domaine**. Vous avez donc :[3][4]
-
-1. **Entités de Domaine** (Domain Layer) : Logique métier pure, sans annotations Doctrine
-2. **Entités Doctrine** (Infrastructure Layer) : Mapping avec la base de données
-
-## Architecture recommandée
-
-### Structure des dossiers
-
-```
-src/
-├── Domain/
-│   └── User/
-│       ├── Entity/
-│       │   └── User.php              # Entité métier PURE
-│       ├── ValueObject/
-│       │   ├── UserId.php
-│       │   └── Email.php
-│       └── Repository/
-│           └── UserRepositoryInterface.php  # Interface du domaine
-│
-└── Infrastructure/
-    └── Persistence/
-        ├── Doctrine/
-        │   ├── Entity/
-        │   │   └── UserEntity.php     # Entité Doctrine (DTO persistence)
-        │   ├── Repository/
-        │   │   └── DoctrineUserRepository.php
-        │   └── Mapper/
-        │       └── UserMapper.php     # Conversion Domain <-> Doctrine
-        └── Mapping/
-            └── UserEntity.orm.xml     # Mapping XML (pas d'annotations!)
-```
-
-### Entité de Domaine (sans Doctrine)
+## 1. Value Objects
 
 ```php
+// src/Domain/Booking/ValueObject/BookingId.php
 <?php
-// src/Domain/User/Entity/User.php
-namespace App\Domain\User\Entity;
 
-use App\Domain\User\ValueObject\UserId;
-use App\Domain\User\ValueObject\Email;
+declare(strict_types=1);
 
-class User
+namespace App\Domain\Booking\ValueObject;
+
+use Symfony\Component\Uid\Uuid;
+
+final readonly class BookingId
 {
-    private function __construct(
-        private UserId $id,
-        private Email $email,
-        private string $username,
-        private \DateTimeImmutable $createdAt
-    ) {}
-    
-    public static function create(Email $email, string $username): self
-    {
-        return new self(
-            id: UserId::generate(),
-            email: $email,
-            username: $username,
-            createdAt: new \DateTimeImmutable()
-        );
-    }
-    
-    public function changeEmail(Email $newEmail): void
-    {
-        // Logique métier pure
-        if ($this->email->equals($newEmail)) {
-            throw new \DomainException('Same email');
-        }
-        
-        $this->email = $newEmail;
-    }
-    
-    // Getters
-    public function getId(): UserId { return $this->id; }
-    public function getEmail(): Email { return $this->email; }
-    public function getUsername(): string { return $this->username; }
-    public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
+private function __construct(private string $value) {}
+
+public static function generate(): self
+{
+return new self(Uuid::v4()->toRfc4122());
+}
+
+public static function fromString(string $value): self
+{
+return new self($value);
+}
+
+public function value(): string
+{
+return $this->value;
+}
 }
 ```
 
-### Entité Doctrine (Infrastructure)
+```php
+// src/Domain/Booking/ValueObject/BookingStatus.php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\Booking\ValueObject;
+
+final readonly class BookingStatus
+{
+private function __construct(private string $value) {}
+
+public static function pending(): self
+{
+return new self('pending');
+}
+
+public static function confirmed(): self
+{
+return new self('confirmed');
+}
+
+public static function fromString(string $value): self
+{
+return new self($value);
+}
+
+public function value(): string
+{
+return $this->value;
+}
+
+public function isPending(): bool
+{
+return $this->value === 'pending';
+}
+}
+```
 
 ```php
+// src/Domain/Booking/ValueObject/Money.php
 <?php
-// src/Infrastructure/Persistence/Doctrine/Entity/UserEntity.php
+
+declare(strict_types=1);
+
+namespace App\Domain\Booking\ValueObject;
+
+final readonly class Money
+{
+private function __construct(
+private float $amount,
+private string $currency = 'EUR'
+) {}
+
+public static function fromAmount(float $amount, string $currency = 'EUR'): self
+{
+return new self($amount, $currency);
+}
+
+public function amount(): float
+{
+return $this->amount;
+}
+
+public function currency(): string
+{
+return $this->currency;
+}
+}
+```
+
+## 2. Entité de Domaine
+
+```php
+// src/Domain/Booking/Entity/Booking.php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\Booking\Entity;
+
+use App\Domain\Booking\ValueObject\BookingId;
+use App\Domain\Booking\ValueObject\BookingStatus;
+use App\Domain\Booking\ValueObject\Money;
+
+final class Booking
+{
+private function __construct(
+private BookingId $id,
+private string $customerId,
+private \DateTimeImmutable $createdAt,
+private BookingStatus $status,
+private Money $totalAmount,
+private ?string $reference,
+private ?\DateTimeImmutable $confirmedAt
+) {}
+
+public static function create(
+BookingId $id,
+string $customerId,
+Money $totalAmount,
+?string $reference = null
+): self {
+return new self(
+id: $id,
+customerId: $customerId,
+createdAt: new \DateTimeImmutable(),
+status: BookingStatus::pending(),
+totalAmount: $totalAmount,
+reference: $reference,
+confirmedAt: null
+);
+}
+
+public static function reconstitute(
+BookingId $id,
+string $customerId,
+\DateTimeImmutable $createdAt,
+BookingStatus $status,
+Money $totalAmount,
+?string $reference,
+?\DateTimeImmutable $confirmedAt
+): self {
+return new self(
+id: $id,
+customerId: $customerId,
+createdAt: $createdAt,
+status: $status,
+totalAmount: $totalAmount,
+reference: $reference,
+confirmedAt: $confirmedAt
+);
+}
+
+public function confirm(): void
+{
+$this->status = BookingStatus::confirmed();
+$this->confirmedAt = new \DateTimeImmutable();
+}
+
+public function cancel(): void
+{
+$this->status = BookingStatus::cancelled();
+}
+
+public function getId(): BookingId { return $this->id; }
+public function getCustomerId(): string { return $this->customerId; }
+public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
+public function getStatus(): BookingStatus { return $this->status; }
+public function getTotalAmount(): Money { return $this->totalAmount; }
+public function getReference(): ?string { return $this->reference; }
+public function getConfirmedAt(): ?\DateTimeImmutable { return $this->confirmedAt; }
+}
+```
+
+## 3. Repository Interface
+
+```php
+// src/Domain/Booking/Repository/BookingRepositoryInterface.php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\Booking\Repository;
+
+use App\Domain\Booking\Entity\Booking;
+use App\Domain\Booking\ValueObject\BookingId;
+
+interface BookingRepositoryInterface
+{
+public function save(Booking $booking): void;
+
+public function findById(BookingId $id): ?Booking;
+
+public function nextIdentity(): BookingId;
+}
+```
+
+## 4. Entité Doctrine
+
+```php
+// src/Infrastructure/Persistence/Doctrine/Entity/BookingEntity.php
+<?php
+
+declare(strict_types=1);
+
 namespace App\Infrastructure\Persistence\Doctrine\Entity;
 
 use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity]
-#[ORM\Table(name: 'users')] // Garde le nom de table legacy
-class UserEntity
+#[ORM\Table(name: 'bookings')]
+class BookingEntity
 {
-    #[ORM\Id]
-    #[ORM\Column(type: 'string', length: 36)]
-    private string $id;
-    
-    #[ORM\Column(type: 'string', length: 255, unique: true)]
-    private string $email;
-    
-    #[ORM\Column(type: 'string', length: 100)]
-    private string $username;
-    
-    #[ORM\Column(type: 'datetime_immutable')]
-    private \DateTimeImmutable $createdAt;
-    
-    // Getters/Setters simples (pas de logique métier!)
-    public function getId(): string { return $this->id; }
-    public function setId(string $id): void { $this->id = $id; }
-    
-    public function getEmail(): string { return $this->email; }
-    public function setEmail(string $email): void { $this->email = $email; }
-    
-    public function getUsername(): string { return $this->username; }
-    public function setUsername(string $username): void { $this->username = $username; }
-    
-    public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
-    public function setCreatedAt(\DateTimeImmutable $createdAt): void { $this->createdAt = $createdAt; }
+#[ORM\Id]
+#[ORM\Column(type: 'string', length: 36)]
+private string $id;
+
+#[ORM\Column(name: 'customer_id', type: 'string', length: 36)]
+private string $customerId;
+
+#[ORM\Column(name: 'created_at', type: 'datetime_immutable')]
+private \DateTimeImmutable $createdAt;
+
+#[ORM\Column(type: 'string', length: 20)]
+private string $status;
+
+#[ORM\Column(name: 'total_amount', type: 'float')]
+private float $totalAmount;
+
+#[ORM\Column(type: 'string', length: 3)]
+private string $currency;
+
+#[ORM\Column(type: 'string', length: 100, nullable: true)]
+private ?string $reference;
+
+#[ORM\Column(name: 'confirmed_at', type: 'datetime_immutable', nullable: true)]
+private ?\DateTimeImmutable $confirmedAt;
+
+public function getId(): string { return $this->id; }
+public function setId(string $id): void { $this->id = $id; }
+
+public function getCustomerId(): string { return $this->customerId; }
+public function setCustomerId(string $customerId): void { $this->customerId = $customerId; }
+
+public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
+public function setCreatedAt(\DateTimeImmutable $createdAt): void { $this->createdAt = $createdAt; }
+
+public function getStatus(): string { return $this->status; }
+public function setStatus(string $status): void { $this->status = $status; }
+
+public function getTotalAmount(): float { return $this->totalAmount; }
+public function setTotalAmount(float $totalAmount): void { $this->totalAmount = $totalAmount; }
+
+public function getCurrency(): string { return $this->currency; }
+public function setCurrency(string $currency): void { $this->currency = $currency; }
+
+public function getReference(): ?string { return $this->reference; }
+public function setReference(?string $reference): void { $this->reference = $reference; }
+
+public function getConfirmedAt(): ?\DateTimeImmutable { return $this->confirmedAt; }
+public function setConfirmedAt(?\DateTimeImmutable $confirmedAt): void { $this->confirmedAt = $confirmedAt; }
 }
 ```
 
-### Mapper (Conversion Domain ↔ Doctrine)
+## 5. Mapper
 
 ```php
+// src/Infrastructure/Persistence/Mapper/BookingMapper.php
 <?php
-// src/Infrastructure/Persistence/Doctrine/Mapper/UserMapper.php
-namespace App\Infrastructure\Persistence\Doctrine\Mapper;
 
-use App\Domain\User\Entity\User;
-use App\Domain\User\ValueObject\UserId;
-use App\Domain\User\ValueObject\Email;
-use App\Infrastructure\Persistence\Doctrine\Entity\UserEntity;
+declare(strict_types=1);
 
-class UserMapper
+namespace App\Infrastructure\Persistence\Mapper;
+
+use App\Domain\Booking\Entity\Booking;
+use App\Domain\Booking\ValueObject\BookingId;
+use App\Domain\Booking\ValueObject\BookingStatus;
+use App\Domain\Booking\ValueObject\Money;
+use App\Infrastructure\Persistence\Doctrine\Entity\BookingEntity;
+
+final readonly class BookingMapper
 {
-    public function toDomain(UserEntity $entity): User
-    {
-        // Utilise la réflexion pour construire l'entité de domaine
-        $reflection = new \ReflectionClass(User::class);
-        $user = $reflection->newInstanceWithoutConstructor();
-        
-        $this->setPrivateProperty($user, 'id', new UserId($entity->getId()));
-        $this->setPrivateProperty($user, 'email', new Email($entity->getEmail()));
-        $this->setPrivateProperty($user, 'username', $entity->getUsername());
-        $this->setPrivateProperty($user, 'createdAt', $entity->getCreatedAt());
-        
-        return $user;
-    }
-    
-    public function toEntity(User $domain): UserEntity
-    {
-        $entity = new UserEntity();
-        $entity->setId($domain->getId()->value());
-        $entity->setEmail($domain->getEmail()->value());
-        $entity->setUsername($domain->getUsername());
-        $entity->setCreatedAt($domain->getCreatedAt());
-        
-        return $entity;
-    }
-    
-    public function updateEntity(User $domain, UserEntity $entity): void
-    {
-        $entity->setEmail($domain->getEmail()->value());
-        $entity->setUsername($domain->getUsername());
-    }
-    
-    private function setPrivateProperty(object $object, string $property, mixed $value): void
-    {
-        $reflection = new \ReflectionProperty($object, $property);
-        $reflection->setAccessible(true);
-        $reflection->setValue($object, $value);
-    }
+public function toDomain(BookingEntity $entity): Booking
+{
+return Booking::reconstitute(
+id: BookingId::fromString($entity->getId()),
+customerId: $entity->getCustomerId(),
+createdAt: $entity->getCreatedAt(),
+status: BookingStatus::fromString($entity->getStatus()),
+totalAmount: Money::fromAmount($entity->getTotalAmount(), $entity->getCurrency()),
+reference: $entity->getReference(),
+confirmedAt: $entity->getConfirmedAt()
+);
+}
+
+public function toEntity(Booking $booking): BookingEntity
+{
+$entity = new BookingEntity();
+$entity->setId($booking->getId()->value());
+$entity->setCustomerId($booking->getCustomerId());
+$entity->setCreatedAt($booking->getCreatedAt());
+$entity->setStatus($booking->getStatus()->value());
+$entity->setTotalAmount($booking->getTotalAmount()->amount());
+$entity->setCurrency($booking->getTotalAmount()->currency());
+$entity->setReference($booking->getReference());
+$entity->setConfirmedAt($booking->getConfirmedAt());
+return $entity;
+}
+
+public function updateEntity(Booking $booking, BookingEntity $entity): void
+{
+$entity->setStatus($booking->getStatus()->value());
+$entity->setTotalAmount($booking->getTotalAmount()->amount());
+$entity->setCurrency($booking->getTotalAmount()->currency());
+$entity->setReference($booking->getReference());
+$entity->setConfirmedAt($booking->getConfirmedAt());
+}
 }
 ```
 
-### Repository Infrastructure
+## 6. Repository Doctrine
 
 ```php
+// src/Infrastructure/Persistence/Doctrine/Repository/DoctrineBookingRepository.php
 <?php
-// src/Infrastructure/Persistence/Doctrine/Repository/DoctrineUserRepository.php
+
+declare(strict_types=1);
+
 namespace App\Infrastructure\Persistence\Doctrine\Repository;
 
-use App\Domain\User\Entity\User;
-use App\Domain\User\ValueObject\UserId;
-use App\Domain\User\Repository\UserRepositoryInterface;
-use App\Infrastructure\Persistence\Doctrine\Entity\UserEntity;
-use App\Infrastructure\Persistence\Doctrine\Mapper\UserMapper;
-use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
-use Doctrine\Persistence\ManagerRegistry;
+use App\Domain\Booking\Entity\Booking;
+use App\Domain\Booking\Repository\BookingRepositoryInterface;
+use App\Domain\Booking\ValueObject\BookingId;
+use App\Infrastructure\Persistence\Doctrine\Entity\BookingEntity;
+use App\Infrastructure\Persistence\Mapper\BookingMapper;
+use Doctrine\ORM\EntityManagerInterface;
 
-class DoctrineUserRepository extends ServiceEntityRepository implements UserRepositoryInterface
+final readonly class DoctrineBookingRepository implements BookingRepositoryInterface
 {
-    public function __construct(
-        ManagerRegistry $registry,
-        private readonly UserMapper $mapper
-    ) {
-        parent::__construct($registry, UserEntity::class);
-    }
-    
-    public function save(User $user): void
-    {
-        $entity = $this->find($user->getId()->value());
-        
-        if ($entity === null) {
-            $entity = $this->mapper->toEntity($user);
-            $this->getEntityManager()->persist($entity);
-        } else {
-            $this->mapper->updateEntity($user, $entity);
-        }
-        
-        $this->getEntityManager()->flush();
-    }
-    
-    public function findById(UserId $id): ?User
-    {
-        $entity = $this->find($id->value());
-        
-        return $entity ? $this->mapper->toDomain($entity) : null;
-    }
-    
-    public function findByEmail(string $email): ?User
-    {
-        $entity = $this->findOneBy(['email' => $email]);
-        
-        return $entity ? $this->mapper->toDomain($entity) : null;
-    }
+public function __construct(
+private EntityManagerInterface $entityManager,
+private BookingMapper $mapper
+) {}
+
+public function save(Booking $booking): void
+{
+$entity = $this->entityManager
+->getRepository(BookingEntity::class)
+->find($booking->getId()->value());
+
+if ($entity) {
+$this->mapper->updateEntity($booking, $entity);
+} else {
+$entity = $this->mapper->toEntity($booking);
+$this->entityManager->persist($entity);
+}
+
+$this->entityManager->flush();
+}
+
+public function findById(BookingId $id): ?Booking
+{
+$entity = $this->entityManager
+->getRepository(BookingEntity::class)
+->find($id->value());
+
+return $entity ? $this->mapper->toDomain($entity) : null;
+}
+
+public function nextIdentity(): BookingId
+{
+return BookingId::generate();
+}
 }
 ```
 
-## Gestion de la base legacy : Migration progressive
-
-### Ne pas toucher la structure existante immédiatement
+## 7. Configuration
 
 ```yaml
-# config/packages/doctrine.yaml
-doctrine:
-    dbal:
-        url: '%env(resolve:DATABASE_URL)%'
-        schema_filter: '~^(?!legacy_)~'  # Ignore les tables non migrées
-    
-    orm:
-        auto_generate_proxy_classes: true
-        naming_strategy: doctrine.orm.naming_strategy.underscore_number_aware
-        auto_mapping: true
-        mappings:
-            App:
-                is_bundle: false
-                dir: '%kernel.project_dir%/src/Infrastructure/Persistence/Doctrine/Entity'
-                prefix: 'App\Infrastructure\Persistence\Doctrine\Entity'
-                alias: App
+# config/services.yaml
+services:
+_defaults:
+autowire: true
+autoconfigure: true
+
+App\Domain\:
+resource: '../src/Domain/'
+
+App\Infrastructure\:
+resource: '../src/Infrastructure/'
+
+App\Domain\Booking\Repository\BookingRepositoryInterface:
+class: App\Infrastructure\Persistence\Doctrine\Repository\DoctrineBookingRepository
 ```
 
-### Approche par étapes
-
-**Phase 1 : Mapping de la table existante (sans modification)**
+## 8. Utilisation dans un Controller
 
 ```php
-#[ORM\Entity]
-#[ORM\Table(name: 'users')] // Table legacy existante
-class UserEntity
-{
-    // Mapper EXACTEMENT les colonnes existantes
-    #[ORM\Column(name: 'id', type: 'integer')] // Même si c'est un mauvais type
-    private int $id;
-    
-    // Pas d'index, pas de FK pour le moment
-}
-```
-
-**Phase 2 : Ajouter progressivement les contraintes avec migrations**[2]
-
-```php
+// src/Controller/BookingController.php
 <?php
-// migrations/Version20251206120000.php
-namespace DoctrineMigrations;
 
-use Doctrine\DBAL\Schema\Schema;
-use Doctrine\Migrations\AbstractMigration;
+declare(strict_types=1);
 
-final class Version20251206120000 extends AbstractMigration
+namespace App\Controller;
+
+use App\Domain\Booking\Entity\Booking;
+use App\Domain\Booking\Repository\BookingRepositoryInterface;
+use App\Domain\Booking\ValueObject\BookingId;
+use App\Domain\Booking\ValueObject\Money;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Attribute\Route;
+
+#[Route('/api/bookings')]
+class BookingController extends AbstractController
 {
-    public function getDescription(): string
-    {
-        return 'Add indexes and foreign keys to users table';
-    }
+public function __construct(
+private readonly BookingRepositoryInterface $bookingRepository
+) {}
 
-    public function up(Schema $schema): void
-    {
-        // Ajouter les index manquants progressivement
-        $this->addSql('CREATE UNIQUE INDEX UNIQ_users_email ON users (email)');
-        $this->addSql('CREATE INDEX IDX_users_created_at ON users (created_at)');
-    }
+#[Route('', methods: ['POST'])]
+public function create(Request $request): JsonResponse
+{
+$data = json_decode($request->getContent(), true);
 
-    public function down(Schema $schema): void
-    {
-        $this->addSql('DROP INDEX UNIQ_users_email');
-        $this->addSql('DROP INDEX IDX_users_created_at');
-    }
+$id = $this->bookingRepository->nextIdentity();
+
+$booking = Booking::create(
+id: $id,
+customerId: $data['customer_id'],
+totalAmount: Money::fromAmount($data['amount'], $data['currency'] ?? 'EUR'),
+reference: $data['reference'] ?? null
+);
+
+$this->bookingRepository->save($booking);
+
+return $this->json(['id' => $id->value()], 201);
+}
+
+#[Route('/{id}', methods: ['GET'])]
+public function show(string $id): JsonResponse
+{
+$booking = $this->bookingRepository->findById(BookingId::fromString($id));
+
+if (!$booking) {
+return $this->json(['error' => 'Not found'], 404);
+}
+
+return $this->json([
+'id' => $booking->getId()->value(),
+'customer_id' => $booking->getCustomerId(),
+'amount' => $booking->getTotalAmount()->amount(),
+'currency' => $booking->getTotalAmount()->currency(),
+'status' => $booking->getStatus()->value(),
+'created_at' => $booking->getCreatedAt()->format('Y-m-d H:i:s'),
+]);
+}
+
+#[Route('/{id}/confirm', methods: ['POST'])]
+public function confirm(string $id): JsonResponse
+{
+$booking = $this->bookingRepository->findById(BookingId::fromString($id));
+
+if (!$booking) {
+return $this->json(['error' => 'Not found'], 404);
+}
+
+$booking->confirm();
+$this->bookingRepository->save($booking);
+
+return $this->json(['status' => 'confirmed']);
+}
 }
 ```
 
-**Phase 3 : Ajouter les FK une fois les données nettoyées**
+## Structure finale
 
-```php
-// Uniquement quand les données respectent l'intégrité référentielle
-$this->addSql('
-    ALTER TABLE orders 
-    ADD CONSTRAINT FK_orders_user_id 
-    FOREIGN KEY (user_id) REFERENCES users(id) 
-    ON DELETE CASCADE
-');
+```
+src/
+├── Domain/
+│ └── Booking/
+│ ├── Entity/
+│ │ └── Booking.php
+│ ├── ValueObject/
+│ │ ├── BookingId.php
+│ │ ├── BookingStatus.php
+│ │ └── Money.php
+│ └── Repository/
+│ └── BookingRepositoryInterface.php
+│
+├── Infrastructure/
+│ └── Persistence/
+│ ├── Doctrine/
+│ │ ├── Entity/
+│ │ │ └── BookingEntity.php
+│ │ └── Repository/
+│ │ └── DoctrineBookingRepository.php
+│ └── Mapper/
+│ └── BookingMapper.php
+│
+└── Controller/
+└── BookingController.php
 ```
 
-## Alternative : Mapping XML (recommandé pour DDD pur)[2]
+C'est tout ! **9 fichiers** pour une architecture DDD complète et fonctionnelle.[2][1]
 
-```xml
-<!-- src/Infrastructure/Persistence/Mapping/UserEntity.orm.xml -->
-<?xml version="1.0" encoding="UTF-8"?>
-<doctrine-mapping xmlns="http://doctrine-project.org/schemas/orm/doctrine-mapping"
-                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                  xsi:schemaLocation="http://doctrine-project.org/schemas/orm/doctrine-mapping
-                  https://www.doctrine-project.org/schemas/orm/doctrine-mapping.xsd">
-    
-    <entity name="App\Infrastructure\Persistence\Doctrine\Entity\UserEntity" table="users">
-        <id name="id" type="string" length="36">
-            <generator strategy="NONE"/>
-        </id>
-        
-        <field name="email" type="string" length="255" unique="true"/>
-        <field name="username" type="string" length="100"/>
-        <field name="createdAt" type="datetime_immutable" column="created_at"/>
-        
-        <indexes>
-            <index columns="email" name="idx_users_email"/>
-        </indexes>
-    </entity>
-</doctrine-mapping>
-```
-
-## Réponse directe à vos questions
-
-1. **Migrer avec Doctrine ?** Oui, mais seulement dans l'Infrastructure Layer[4][1]
-2. **Créer des repos ?** Oui, deux types : interface dans Domain, implémentation Doctrine dans Infrastructure[4][2]
-3. **Annotations sur entités ?** Non sur les entités de domaine ! Uniquement sur les entités Doctrine (ou mieux : XML mapping)[2]
-4. **Index/FK manquants ?** Ajoutez-les progressivement via migrations, après avoir nettoyé les données legacy[5][6]
+Sources
+[1] DDD with Symfony 7: Clean Architecture and Deptrac boundaries https://dev.to/mykola_vantukh/ddd-in-symfony-7-clean-architecture-and-deptrac-enforced-boundaries-120a
+[2] Applying Domain-Driven Design in PHP and Symfony https://sensiolabs.com/blog/2025/applying-domain-driven-design-in-php-and-symfony-a-hands-on-guide
