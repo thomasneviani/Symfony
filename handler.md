@@ -47,6 +47,10 @@ src/
 │       │   └── LoginErpCommand.php
 │       ├── Handler/
 │       │   └── LoginErpHandler.php
+│       ├── Service/
+│       │   ├── UserFinderService.php
+│       │   ├── UserPermissionService.php
+│       │   └── TokenGenerator.php
 │       └── Exception/
 │           └── ErpAuthenticationFailedException.php
 │
@@ -66,8 +70,14 @@ src/
 │   │   └── DTO/
 │   │       ├── ErpLoginResponse.php
 │   │       └── ErpProfileResponse.php
+│   │
 │   └── Doctrine/
 │       └── UserRepository.php
+│
+└── UI/
+    └── Http/
+        └── Controller/
+            └── LoginErpController.php
 ```
 
 ---
