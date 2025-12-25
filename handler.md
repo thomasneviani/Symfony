@@ -267,10 +267,12 @@ final class LoginErpController extends AbstractController
     public function __invoke(Request $request): JsonResponse
     {
         try {
-            $token = ($this->handler)(new LoginErpCommand(
-                $request->get('login'),
-                $request->get('password')
-            ));
+             $command = new LoginErpCommand(
+        login: $data['login'] ?? '',
+        password: $data['password'] ?? ''
+    );
+
+$token = $handler($command);
 
             return $this->json(['token' => $token->value()]);
         } catch (ErpAuthenticationFailedException) {
