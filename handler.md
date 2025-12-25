@@ -1,43 +1,14 @@
-Parfait, **là on touche un cas réel**, pas un exemple de tuto 👍
-Réponse courte : **oui, c’est normal**, et **ça ne change pas la règle**.
-Réponse structurée juste après.
+Parfait.
+Voici **l’exemple FINAL, complet, cohérent et réaliste**, avec **les dossiers + le code clé**, exactement pour **TON cas** :
+👉 2 appels API
+👉 3 services DB
+👉 validation `error === 0`
+👉 handler = orchestration
+👉 zéro over-engineering
 
 ---
 
-## 🎯 Situation réelle (la tienne)
-
-> 👉 *“j’ai 2 appels API externes + 3 services qui vont chercher de la data en DB”*
-
-➡ **C’est exactement un use case applicatif**
-➡ Donc **1 handler**, qui orchestre **plusieurs dépendances**
-
----
-
-## 🧠 Principe clé (à ne pas lâcher)
-
-> **Le handler orchestre, il ne travaille pas.**
-> **Les services travaillent, ils ne décident pas du scénario.**
-
----
-
-## 🧩 Architecture adaptée à ton cas
-
-```text
-LoginErpHandler
- ├── ErpAuthClient
- ├── ErpProfileClient
- ├── UserFinderService
- ├── UserPermissionService
- └── TokenGenerator
-```
-
-➡ **2 appels API**
-➡ **3 services DB**
-➡ **1 scénario clair**
-
----
-
-## 🗂️ Arborescence réaliste
+# 🗂️ Architecture finale (à copier telle quelle)
 
 ```text
 src/
@@ -70,7 +41,6 @@ src/
 │   │   └── DTO/
 │   │       ├── ErpLoginResponse.php
 │   │       └── ErpProfileResponse.php
-│   │
 │   └── Doctrine/
 │       └── UserRepository.php
 │
@@ -82,25 +52,165 @@ src/
 
 ---
 
-## 🧠 Le flux (important)
+# 1️⃣ Command
 
-```text
-1. Login ERP (API #1)
-2. Validation error === 0
-3. Récupération profil ERP (API #2)
-4. Récupération user local
-5. Récupération droits / rôles
-6. Génération token
+```php
+// src/Application/Auth/Command/LoginErpCommand.php
+final class LoginErpCommand
+{
+    public function __construct(
+        public readonly string $login,
+        public readonly string $password
+    ) {}
+}
 ```
-
-➡ **le handler sait l’ordre**
-➡ **les services ne le savent pas**
 
 ---
 
-## 🎯 Exemple de Handler réaliste
+# 2️⃣ DTO ERP
 
 ```php
+// src/Infrastructure/Erp/DTO/ErpLoginResponse.php
+final class ErpLoginResponse
+{
+    public function __construct(
+        public readonly int $error,
+        public readonly ?string $token
+    ) {}
+}
+```
+
+```php
+// src/Infrastructure/Erp/DTO/ErpProfileResponse.php
+final class ErpProfileResponse
+{
+    public function __construct(
+        public readonly string $erpId,
+        public readonly string $email
+    ) {}
+}
+```
+
+---
+
+# 3️⃣ Clients ERP (Infrastructure pure)
+
+```php
+// src/Infrastructure/Erp/Client/ErpAuthClient.php
+final class ErpAuthClient
+{
+    public function login(string $login, string $password): ErpLoginResponse
+    {
+        // appel HTTP ERP
+        // $data = ...
+
+        return new ErpLoginResponse(
+            error: $data['error'],
+            token: $data['token'] ?? null
+        );
+    }
+}
+```
+
+```php
+// src/Infrastructure/Erp/Client/ErpProfileClient.php
+final class ErpProfileClient
+{
+    public function fetchProfile(string $token): ErpProfileResponse
+    {
+        // appel HTTP ERP
+        // $data = ...
+
+        return new ErpProfileResponse(
+            erpId: $data['id'],
+            email: $data['email']
+        );
+    }
+}
+```
+
+---
+
+# 4️⃣ Services applicatifs (DB / règles locales)
+
+```php
+// src/Application/Auth/Service/UserFinderService.php
+final class UserFinderService
+{
+    public function __construct(
+        private UserRepository $userRepository
+    ) {}
+
+    public function findByErpId(string $erpId): User
+    {
+        return $this->userRepository->findByErpId($erpId);
+    }
+}
+```
+
+```php
+// src/Application/Auth/Service/UserPermissionService.php
+final class UserPermissionService
+{
+    public function forUser(User $user): array
+    {
+        return $user->permissions();
+    }
+}
+```
+
+```php
+// src/Application/Auth/Service/TokenGenerator.php
+final class TokenGenerator
+{
+    public function generate(User $user, array $permissions): AuthToken
+    {
+        // génération JWT ou autre
+        return new AuthToken('jwt-token-value');
+    }
+}
+```
+
+---
+
+# 5️⃣ Value Object domaine
+
+```php
+// src/Domain/Auth/ValueObject/AuthToken.php
+final class AuthToken
+{
+    public function __construct(
+        private string $value
+    ) {}
+
+    public function value(): string
+    {
+        return $this->value;
+    }
+}
+```
+
+---
+
+# 6️⃣ Exception applicative
+
+```php
+// src/Application/Auth/Exception/ErpAuthenticationFailedException.php
+final class ErpAuthenticationFailedException extends \RuntimeException
+{
+    public function __construct()
+    {
+        parent::__construct('ERP authentication failed');
+    }
+}
+```
+
+---
+
+# 7️⃣ 🎯 LE HANDLER FINAL (le cœur)
+
+```php
+// src/Application/Auth/Handler/LoginErpHandler.php
 final class LoginErpHandler
 {
     public function __construct(
@@ -119,6 +229,7 @@ final class LoginErpHandler
             $command->password
         );
 
+        // ✅ validation ICI
         if ($loginResponse->error !== 0 || $loginResponse->token === null) {
             throw new ErpAuthenticationFailedException();
         }
@@ -140,69 +251,52 @@ final class LoginErpHandler
 }
 ```
 
-✔ clair
-✔ linéaire
-✔ lisible
-✔ testable
-
 ---
 
-## 🧪 Et les tests ? (important)
-
-Tu peux tester :
-
-* **le handler avec des fakes**
-* **chaque service séparément**
+# 8️⃣ Controller (UI = traduction HTTP)
 
 ```php
-public function test_login_fails_when_erp_auth_fails()
+// src/UI/Http/Controller/LoginErpController.php
+final class LoginErpController extends AbstractController
 {
-    $erpClient = new FakeErpAuthClient(error: 1);
+    public function __construct(
+        private LoginErpHandler $handler
+    ) {}
 
-    $handler = new LoginErpHandler(
-        $erpClient,
-        new FakeErpProfileClient(),
-        new FakeUserFinder(),
-        new FakePermissionService(),
-        new FakeTokenGenerator()
-    );
+    #[Route('/api/login/erp', methods: ['POST'])]
+    public function __invoke(Request $request): JsonResponse
+    {
+        try {
+            $token = ($this->handler)(new LoginErpCommand(
+                $request->get('login'),
+                $request->get('password')
+            ));
 
-    $this->expectException(ErpAuthenticationFailedException::class);
-
-    $handler(new LoginErpCommand('john', 'bad-pass'));
+            return $this->json(['token' => $token->value()]);
+        } catch (ErpAuthenticationFailedException) {
+            return $this->json(['message' => 'Unauthorized'], 401);
+        }
+    }
 }
 ```
 
 ---
 
-## 🚨 Quand s’inquiéter ?
+## 🧠 Règle finale (à garder pour tout le projet)
 
-### ❌ Handler trop gros ( > ~50 lignes )
+* **Handler** → scénario / ordre / décisions
+* **Service applicatif** → travail ciblé et réutilisable
+* **Client** → API externe
+* **Domain** → objets métiers purs
+* **Controller** → HTTP only
 
-➡ découpe en **services applicatifs**
+👉 Ce que tu as là est **100 % légit**, **maintenable**, **testable**, et **défendable en entretien ou en code review**.
 
-### ❌ Services qui appellent d’autres services
+Si tu veux, prochain step possible :
 
-➡ fuite d’orchestration
+* test unitaire complet du handler
+* version avec transaction DB
+* version async (Messenger)
+* ou audit de TON code réel
 
-### ❌ Service qui dépend de l’ordre
-
-➡ responsabilité mal placée
-
----
-
-## 🧠 Règle finale à retenir (la plus importante)
-
-> **Le handler connaît le scénario.
-> Les services connaissent leur métier.
-> Les clients connaissent les APIs.**
-
----
-
-Si tu veux, prochaine étape :
-
-* on **refactor ton cas réel**
-* je te fais une **version avec transactions**
-* ou une **version async (Messenger)**
-
-Dis-moi 👌
+Tu choisis.
